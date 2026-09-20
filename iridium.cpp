@@ -922,14 +922,14 @@ void handleComputedFieldRead(JSContext *ctx,
 
 // Opt this...
 void handleJSPrivateFieldWrite(JSContext *ctx,
-                              vector<BCInstruction> &instructions,
-                              IridiumSEXP *rval) {
+                               vector<BCInstruction> &instructions,
+                               IridiumSEXP *rval) {
   bool isDeclaration = hasFlag(rval, "DECL");
   if (isDeclaration) {
-    lowerToStack(ctx, instructions, rval->args[0]); // obj
-    lowerToStack(ctx, instructions, rval->args[1]); // obj prop
-    lowerToStack(ctx, instructions, rval->args[2]); // obj prop value
-    pushOP(ctx, instructions, OP_insert3);          // value obj prop value
+    lowerToStack(ctx, instructions, rval->args[0]);     // obj
+    lowerToStack(ctx, instructions, rval->args[1]);     // obj prop
+    lowerToStack(ctx, instructions, rval->args[2]);     // obj prop value
+    pushOP(ctx, instructions, OP_insert3);              // value obj prop value
     pushOP(ctx, instructions, OP_define_private_field); // value obj
     pushOP(ctx, instructions, OP_drop);                 // value
   } else {
@@ -966,9 +966,8 @@ void handleComputedFieldWrite(JSContext *ctx,
   pushOP(ctx, instructions, OP_put_array_el); // Receiver Field Rval
 }
 
-void handleCallSite(JSContext *ctx,
-                              vector<BCInstruction> &instructions,
-                              IridiumSEXP *rval) {
+void handleCallSite(JSContext *ctx, vector<BCInstruction> &instructions,
+                    IridiumSEXP *rval) {
   int i = 0;
 
   // Handle Constructor Call Context, the class object is duplicated on the
@@ -1005,8 +1004,7 @@ void handleCallSite(JSContext *ctx,
             auto bindingReadByContextObj = contextObj->args[0];
             if (isTag(bindingReadByContextObj, "GlobalBinding")) {
               if (strcmp(getFlagString(receiver, "NAME"),
-                          getFlagString(bindingReadByContextObj, "NAME")) ==
-                  0) {
+                         getFlagString(bindingReadByContextObj, "NAME")) == 0) {
                 // handleFieldRead(ctx, instructions, lookup, true);
                 if (isTag(lookup, "FieldRead")) {
                   handleFieldRead(ctx, instructions, lookup, true);
@@ -1022,8 +1020,7 @@ void handleCallSite(JSContext *ctx,
           if (isTag(contextObj, "EnvRead")) {
             auto bindingReadByContextObj = contextObj->args[0];
             if (isTag(bindingReadByContextObj, "EnvBinding")) {
-              int contextIDX =
-                  getFlagNumber(bindingReadByContextObj, "REFIDX");
+              int contextIDX = getFlagNumber(bindingReadByContextObj, "REFIDX");
               if (receiverIDX == contextIDX) {
                 // handleFieldRead(ctx, instructions, lookup, true);
                 if (isTag(lookup, "FieldRead")) {
@@ -1040,8 +1037,7 @@ void handleCallSite(JSContext *ctx,
           if (isTag(contextObj, "EnvRead")) {
             auto bindingReadByContextObj = contextObj->args[0];
             if (isTag(bindingReadByContextObj, "RemoteEnvBinding")) {
-              int contextIDX =
-                  getFlagNumber(bindingReadByContextObj, "REFIDX");
+              int contextIDX = getFlagNumber(bindingReadByContextObj, "REFIDX");
               if (receiverIDX == contextIDX) {
                 // handleFieldRead(ctx, instructions, lookup, true);
                 if (isTag(lookup, "FieldRead")) {
@@ -1078,11 +1074,9 @@ void handleCallSite(JSContext *ctx,
     // Arguments were pushed
     return pushOP32(ctx, instructions, OP_eval, data);
   } else if (hasFlag(rval, "Super")) {
-    return pushOP16(ctx, instructions, OP_call_constructor,
-                    rval->numArgs - 2);
+    return pushOP16(ctx, instructions, OP_call_constructor, rval->numArgs - 2);
   } else if (hasFlag(rval, "ConstructorCall")) {
-    return pushOP16(ctx, instructions, OP_call_constructor,
-                    rval->numArgs - 1);
+    return pushOP16(ctx, instructions, OP_call_constructor, rval->numArgs - 1);
   } else if (hasFlag(rval, "CCall")) {
     if (isTailCall)
       return pushOP16(ctx, instructions, OP_tail_call_method,
@@ -1117,9 +1111,8 @@ void handleCallSite(JSContext *ctx,
   }
 }
 
-void handleApply(JSContext *ctx,
-                              vector<BCInstruction> &instructions,
-                              IridiumSEXP *rval) {
+void handleApply(JSContext *ctx, vector<BCInstruction> &instructions,
+                 IridiumSEXP *rval) {
   assert(rval->numArgs == 3 && "Apply requires exactly three arguments");
 
   auto &callee = rval->args[0];
@@ -1600,28 +1593,52 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
     bool isPrefix = getFlagBoolean(rval, "PREFIX");
     bool isIncrement = getFlagBoolean(rval, "INCREMENT");
 
-    // Read field
-    IridiumSEXP *computedFieldRead = rval->args[0];
-    assert(isTag(computedFieldRead, "JSComputedFieldRead"));
-    IridiumSEXP *receiver = computedFieldRead->args[0];
-    lowerToStack(ctx, instructions, receiver);
-    IridiumSEXP *field = computedFieldRead->args[1];
-    lowerToStack(ctx, instructions, field);
+    IridiumSEXP *read = rval->args[0];
 
-    if (isPrefix) {
+    if (isTag(read, "JSComputedFieldRead")) {
+      // ---- obj[key]++ / ++obj[key] : lvalue depth = 2 ----
+      IridiumSEXP *receiver = read->args[0];
+      lowerToStack(ctx, instructions, receiver);
+      IridiumSEXP *field = read->args[1];
+      lowerToStack(ctx, instructions, field);
+
       pushOP(ctx, instructions, OP_to_propkey2);
       pushOP(ctx, instructions, OP_dup2);
       pushOP(ctx, instructions, OP_get_array_el);
-      pushOP(ctx, instructions, isIncrement ? OP_inc : OP_dec);
-      pushOP(ctx, instructions, OP_insert3);
+      if (isPrefix) {
+        pushOP(ctx, instructions, isIncrement ? OP_inc : OP_dec);
+        pushOP(ctx, instructions, OP_insert3);
+      } else {
+        pushOP(ctx, instructions, isIncrement ? OP_post_inc : OP_post_dec);
+        pushOP(ctx, instructions, OP_perm4);
+      }
       pushOP(ctx, instructions, OP_put_array_el);
     } else {
-      pushOP(ctx, instructions, OP_to_propkey2);
-      pushOP(ctx, instructions, OP_dup2);
-      pushOP(ctx, instructions, OP_get_array_el);
-      pushOP(ctx, instructions, isIncrement ? OP_post_inc : OP_post_dec);
-      pushOP(ctx, instructions, OP_perm4);
-      pushOP(ctx, instructions, OP_put_array_el);
+      // ---- obj.f++ / ++obj.f : lvalue depth = 1 ----
+      ensureTag(read, "FieldRead");
+
+      IridiumSEXP *field = read->args[1];
+      ensureTag(field, "String");
+      auto fieldNameString = getFlagString(field, "IridiumPrimitive");
+
+      IridiumSEXP *receiver = read->args[0];
+      lowerToStack(ctx, instructions, receiver);
+
+      // obj -> obj, val   (get_field2 keeps the receiver for the write back;
+      // never the OP_get_length fast path, since that consumes the receiver)
+      JSAtom fieldAtom = JS_NewAtom(ctx, fieldNameString);
+      pushOP32(ctx, instructions, OP_get_field2, fieldAtom);
+
+      if (isPrefix) {
+        pushOP(ctx, instructions, isIncrement ? OP_inc : OP_dec);
+        pushOP(ctx, instructions, OP_insert2);
+      } else {
+        pushOP(ctx, instructions, isIncrement ? OP_post_inc : OP_post_dec);
+        pushOP(ctx, instructions, OP_perm3);
+      }
+
+      JSAtom putAtom = JS_NewAtom(ctx, fieldNameString);
+      pushOP32(ctx, instructions, OP_put_field, putAtom);
     }
   } else if (isTag(rval, "JSObjectProp")) {
     IridiumSEXP *val = rval->args[1];
@@ -1770,7 +1787,7 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
     return pushOP(ctx, instructions, OP_await);
   } else if (isTag(rval, "Nope")) {
     return;
-  }else if (isTag(rval, "DCTRRet")) {
+  } else if (isTag(rval, "DCTRRet")) {
     // user_val
     lowerToStack(ctx, instructions, rval->args[0]);
     pushOP(ctx, instructions, OP_check_ctor_return);
@@ -1814,7 +1831,8 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
     // Keep 1, Nip 2
     return keepNDropM(ctx, instructions, 1, 2);
   } else if (isTag(rval, "ThisINIT")) {
-    // lowerToStack(ctx, instructions, rval->args[0]); We artifically create this read dependency to make Liveness analysis cleaner
+    // lowerToStack(ctx, instructions, rval->args[0]); We artifically create
+    // this read dependency to make Liveness analysis cleaner
     return lowerToStack(ctx, instructions, rval->args[1]);
   } else if (isTag(rval, "JSAppend")) {
     lowerToStack(ctx, instructions, rval->args[0]); // tmp
@@ -1834,7 +1852,7 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
       // [it, meth, off] -> [it, meth, off, result, done]
       return pushOP16(ctx, instructions, OP_for_of_next, 0);
     }
-  }  else if (isTag(rval, "JSCatchContext")) {
+  } else if (isTag(rval, "JSCatchContext")) {
     // Do nothing
     return;
   } else {
@@ -2417,37 +2435,23 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
                    IridiumSEXP *currStmt) {
 
   // New AMP nodes
-  if (
-    isTag(currStmt, "EnvRead")
-    || isTag(currStmt, "FieldRead")
-    || isTag(currStmt, "CallSite")
-    || isTag(currStmt, "Apply")
-    || isTag(currStmt, "PVTEnvRead")
-    || isTag(currStmt, "JSPrivateFieldRead")
-    || isTag(currStmt, "JSCatchContext")
-    || isTag(currStmt, "JSBinop")
-    || isTag(currStmt, "JSUnop")
-    || isTag(currStmt, "Unop")
-    || isTag(currStmt, "Binop")
-    || isTag(currStmt, "JSComputedFieldRead")
-    || isTag(currStmt, "JSSuperFieldRead")
-    || isTag(currStmt, "JSToObject")
-    || isTag(currStmt, "JSAppend")
-    || isTag(currStmt, "JSCopyDataProperties")
-    || isTag(currStmt, "UNOPDelMemberExpr")
-    || isTag(currStmt, "UNOPDelVar")
-    || isTag(currStmt, "Await")
-    || isTag(currStmt, "IDOP")
-    || isTag(currStmt, "JSIDOP")
-    || isTag(currStmt, "DCTRRet")
-    || isTag(currStmt, "ToNumeric")
+  if (isTag(currStmt, "EnvRead") || isTag(currStmt, "FieldRead") ||
+      isTag(currStmt, "CallSite") || isTag(currStmt, "Apply") ||
+      isTag(currStmt, "PVTEnvRead") || isTag(currStmt, "JSPrivateFieldRead") ||
+      isTag(currStmt, "JSCatchContext") || isTag(currStmt, "JSBinop") ||
+      isTag(currStmt, "JSUnop") || isTag(currStmt, "Unop") ||
+      isTag(currStmt, "Binop") || isTag(currStmt, "JSComputedFieldRead") ||
+      isTag(currStmt, "JSSuperFieldRead") || isTag(currStmt, "JSToObject") ||
+      isTag(currStmt, "JSAppend") || isTag(currStmt, "JSCopyDataProperties") ||
+      isTag(currStmt, "UNOPDelMemberExpr") || isTag(currStmt, "UNOPDelVar") ||
+      isTag(currStmt, "Await") || isTag(currStmt, "IDOP") ||
+      isTag(currStmt, "JSIDOP") || isTag(currStmt, "DCTRRet") ||
+      isTag(currStmt, "ToNumeric")
 
-    || isTag(currStmt, "JSTemplate")
-  ) {
+      || isTag(currStmt, "JSTemplate")) {
     lowerToStack(ctx, instructions, currStmt);
     pushOP(ctx, instructions, OP_drop);
-  }
-  else if (isTag(currStmt, "Yield")) {
+  } else if (isTag(currStmt, "Yield")) {
     fprintf(stderr, "Await not expected at stmt level...");
     exit(1);
   } else if (isTag(currStmt, "JSForOfStart")) {
@@ -3564,7 +3568,6 @@ struct SnipSnap {
         }
       }
     }
-
   }
 
   void execute() {
