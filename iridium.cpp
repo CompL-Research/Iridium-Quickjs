@@ -1032,19 +1032,6 @@ void handleCallSite(JSContext *ctx, vector<BCInstruction> &instructions,
   IridiumSEXP *thisArg = rval->args[1];
   int argc = rval->numArgs - 2;
 
-  if (hasFlag(rval, "JSDirectEval")) {
-    // eval(...) takes no `this`
-    lowerToStack(ctx, instructions, callee);
-    for (int i = 2; i < rval->numArgs; i++)
-      lowerToStack(ctx, instructions, rval->args[i]);
-    uint32_t data = 0;
-    uint16_t *d1 = (uint16_t *)&data;
-    uint16_t *d2 = d1 + 1;
-    *d1 = argc;
-    *d2 = getFlagNumber(rval, "JSDirectEval"); // scopeIdx
-    return pushOP32(ctx, instructions, OP_eval, data);
-  }
-
   if (isUndefinedRead(thisArg)) {
     lowerToStack(ctx, instructions, callee);
     for (int i = 2; i < rval->numArgs; i++)
@@ -1089,23 +1076,31 @@ void handleApply(JSContext *ctx, vector<BCInstruction> &instructions,
   auto &callee = rval->args[0];
   auto &calleeCTX = rval->args[1];
   auto &argList = rval->args[2];
-  bool isJSDirectEval = hasFlag(rval, "JSDirectEval");
-
-  // Lower callee, then `this` (direct eval takes none)
   lowerToStack(ctx, instructions, callee);
-  if (!isJSDirectEval)
-    lowerToStack(ctx, instructions, calleeCTX);
-
-  // Lower arglist
+  lowerToStack(ctx, instructions, calleeCTX);
   lowerToStack(ctx, instructions, argList);
+  return pushOP16(ctx, instructions, OP_apply, 0);
+}
 
-  // Emit call
-  if (isJSDirectEval) {
-    double directEvalScope = getFlagDouble(rval, "JSDirectEval");
-    return pushOP16(ctx, instructions, OP_apply_eval, directEvalScope);
-  } else {
-    return pushOP16(ctx, instructions, OP_apply, 0);
+// Direct eval: JSEval(callee, ...args) / JSEvalApply(callee, argList). No
+// `this`; ScopeIDX tells eval which scope it can see.
+void handleEval(JSContext *ctx, vector<BCInstruction> &instructions,
+                IridiumSEXP *rval, bool isApply) {
+  double scopeIdx = getFlagDouble(rval, "ScopeIDX");
+  lowerToStack(ctx, instructions, rval->args[0]);
+  if (isApply) {
+    lowerToStack(ctx, instructions, rval->args[1]);
+    pushOP16(ctx, instructions, OP_apply_eval, scopeIdx);
+    return;
   }
+  for (int i = 1; i < rval->numArgs; i++)
+    lowerToStack(ctx, instructions, rval->args[i]);
+  uint32_t data = 0;
+  uint16_t *d1 = (uint16_t *)&data;
+  uint16_t *d2 = d1 + 1;
+  *d1 = rval->numArgs - 1; // argc
+  *d2 = scopeIdx;
+  pushOP32(ctx, instructions, OP_eval, data);
 }
 
 // [[Construct]](callee, args, newTarget): JSConstruct (arguments after
@@ -1335,6 +1330,10 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
                       JS_NewAtom(ctx, lookupVal));
   } else if (isTag(rval, "Apply")) {
     handleApply(ctx, instructions, rval);
+  } else if (isTag(rval, "JSEval")) {
+    handleEval(ctx, instructions, rval, false);
+  } else if (isTag(rval, "JSEvalApply")) {
+    handleEval(ctx, instructions, rval, true);
   } else if (isTag(rval, "JSConstruct")) {
     handleConstruct(ctx, instructions, rval, false);
   } else if (isTag(rval, "JSConstructApply")) {
@@ -2396,6 +2395,7 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
   if (isTag(currStmt, "EnvRead") || isTag(currStmt, "FieldRead") ||
       isTag(currStmt, "CallSite") || isTag(currStmt, "Apply") ||
       isTag(currStmt, "JSConstruct") || isTag(currStmt, "JSConstructApply") ||
+      isTag(currStmt, "JSEval") || isTag(currStmt, "JSEvalApply") ||
       isTag(currStmt, "PVTEnvRead") || isTag(currStmt, "JSPrivateFieldRead") ||
       isTag(currStmt, "JSCatchContext") || isTag(currStmt, "JSBinop") ||
       isTag(currStmt, "JSUnop") || isTag(currStmt, "Unop") ||
