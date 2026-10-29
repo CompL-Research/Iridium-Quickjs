@@ -1761,9 +1761,10 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
     lowerToStack(ctx, instructions, rval->args[1]); // insertionIdx
     lowerToStack(ctx, instructions, rval->args[2]); // spreadVal
     return pushOP(ctx, instructions, OP_append);
-  } else if (isTag(rval, "JSForOfNext")) {
-
-    if (getFlagBoolean(rval, "AWAIT")) {
+  } else if (isTag(rval, "JSForOfNext") || isTag(rval, "JSForAwaitOfNext")) {
+    // The iterator state is on the stack (from the start node); args[0] is
+    // not read
+    if (isTag(rval, "JSForAwaitOfNext")) {
       pushOP(ctx, instructions, OP_dup3);
       pushOP(ctx, instructions, OP_drop);
       pushOP16(ctx, instructions, OP_call_method, 0);
@@ -2380,16 +2381,15 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
   } else if (isTag(currStmt, "Yield")) {
     fprintf(stderr, "Await not expected at stmt level...");
     exit(1);
-  } else if (isTag(currStmt, "JSForOfStart")) {
+  } else if (isTag(currStmt, "JSForOfStart") ||
+             isTag(currStmt, "JSForAwaitOfStart")) {
     // Push obj onto the stack
     lowerToStack(ctx, instructions, currStmt->args[0]);
 
     // obj -> enum_obj iterator_method catch_offset
-    if (getFlagBoolean(currStmt, "AWAIT")) {
-      return pushOP(ctx, instructions, OP_for_await_of_start);
-    } else {
-      return pushOP(ctx, instructions, OP_for_of_start);
-    }
+    return pushOP(ctx, instructions,
+                  isTag(currStmt, "JSForAwaitOfStart") ? OP_for_await_of_start
+                                                       : OP_for_of_start);
   } else if (isTag(currStmt, "QJSModuleInit")) {
     pushOP(ctx, instructions, OP_push_this);
     pushOP32(ctx, instructions, OP_if_false8, 2);
