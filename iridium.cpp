@@ -871,8 +871,39 @@ void keepNDropM(JSContext *ctx, vector<BCInstruction> &instructions, int N,
 void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
                   IridiumSEXP *rval, bool safeRead = false);
 
+// Field access with an explicit receiver (super.x): [[Get]]/[[Set]] on obj with
+// `this` = receiver, i.e. get_super_value / put_super_value.
+void handleReceiverFieldRead(JSContext *ctx, vector<BCInstruction> &instructions,
+                             IridiumSEXP *rval, bool retainContext) {
+  if (retainContext) {
+    fprintf(stderr, "TODO: retained context on a field read with a receiver\n");
+    exit(1);
+  }
+  lowerToStack(ctx, instructions, rval->args[2]); // receiver
+  lowerToStack(ctx, instructions, rval->args[0]); // obj
+  lowerToStack(ctx, instructions, rval->args[1]); // key
+  pushOP(ctx, instructions, OP_get_super_value);
+}
+
+void handleReceiverFieldWrite(JSContext *ctx, vector<BCInstruction> &instructions,
+                              IridiumSEXP *rval, bool toPropKey, bool retainContext) {
+  lowerToStack(ctx, instructions, rval->args[3]); // receiver
+  lowerToStack(ctx, instructions, rval->args[0]); // obj
+  lowerToStack(ctx, instructions, rval->args[1]); // key
+  if (toPropKey)
+    pushOP(ctx, instructions, OP_to_propkey);
+  lowerToStack(ctx, instructions, rval->args[2]); // value
+  if (retainContext) {
+    // receiver obj key value -> value receiver obj key value
+    pushOP(ctx, instructions, OP_insert4);
+  }
+  pushOP(ctx, instructions, OP_put_super_value);
+}
+
 void handleFieldRead(JSContext *ctx, vector<BCInstruction> &instructions,
                      IridiumSEXP *rval, bool retainContext = false) {
+  if (rval->numArgs == 3)
+    return handleReceiverFieldRead(ctx, instructions, rval, retainContext);
   IridiumSEXP *receiver = rval->args[0];
   lowerToStack(ctx, instructions, receiver);
   IridiumSEXP *field = rval->args[1];
@@ -889,6 +920,8 @@ void handleFieldRead(JSContext *ctx, vector<BCInstruction> &instructions,
 
 void handleFieldWrite(JSContext *ctx, vector<BCInstruction> &instructions,
                       IridiumSEXP *rval, bool retainContext = false) {
+  if (rval->numArgs == 4)
+    return handleReceiverFieldWrite(ctx, instructions, rval, false, retainContext);
   // Receiver
   IridiumSEXP *receiver = rval->args[0];
   lowerToStack(ctx, instructions, receiver);
@@ -912,6 +945,8 @@ void handleFieldWrite(JSContext *ctx, vector<BCInstruction> &instructions,
 void handleComputedFieldRead(JSContext *ctx,
                              vector<BCInstruction> &instructions,
                              IridiumSEXP *rval, bool retainContext = false) {
+  if (rval->numArgs == 3)
+    return handleReceiverFieldRead(ctx, instructions, rval, retainContext);
   IridiumSEXP *receiver = rval->args[0];
   lowerToStack(ctx, instructions, receiver);
   IridiumSEXP *field = rval->args[1];
@@ -944,6 +979,9 @@ void handleJSPrivateFieldWrite(JSContext *ctx,
 void handleComputedFieldWrite(JSContext *ctx,
                               vector<BCInstruction> &instructions,
                               IridiumSEXP *rval, bool retainContext = false) {
+  if (rval->numArgs == 4)
+    return handleReceiverFieldWrite(ctx, instructions, rval,
+                                    !hasFlag(rval, "SAFE"), retainContext);
   // Receiver
   IridiumSEXP *receiver = rval->args[0];
   lowerToStack(ctx, instructions, receiver);
@@ -996,7 +1034,8 @@ void handleCallSite(JSContext *ctx, vector<BCInstruction> &instructions,
     auto contextObj = rval->args[0];
     auto lookup = rval->args[1];
 
-    if (isTag(lookup, "FieldRead") || isTag(lookup, "JSComputedFieldRead")) {
+    if ((isTag(lookup, "FieldRead") || isTag(lookup, "JSComputedFieldRead")) &&
+        lookup->numArgs == 2) {
       if (isTag(lookup->args[0], "EnvRead")) {
         auto receiver = lookup->args[0]->args[0];
         if (isTag(receiver, "GlobalBinding")) {
@@ -1718,21 +1757,6 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
   } else if (isTag(rval, "JSGetPrototypeOf")) {
     lowerToStack(ctx, instructions, rval->args[0]);
     return pushOP(ctx, instructions, OP_get_super);
-  } else if (isTag(rval, "JSSuperFieldRead")) {
-    lowerToStack(ctx, instructions, rval->args[0]);
-    lowerToStack(ctx, instructions, rval->args[1]);
-    pushOP(ctx, instructions, OP_get_super);
-    lowerToStack(ctx, instructions, rval->args[2]);
-    return pushOP(ctx, instructions, OP_get_super_value);
-  } else if (isTag(rval, "JSSuperFieldWrite")) {
-    lowerToStack(ctx, instructions, rval->args[0]); // this
-    lowerToStack(ctx, instructions, rval->args[1]); // home object
-    pushOP(ctx, instructions, OP_get_super);        // super object
-    lowerToStack(ctx, instructions, rval->args[2]);
-    lowerToStack(ctx, instructions, rval->args[3]);
-    // this obj prop a -> a this obj prop a
-    pushOP(ctx, instructions, OP_insert4);
-    return pushOP(ctx, instructions, OP_put_super_value);
   } else if (isTag(rval, "Null")) {
     return pushOP(ctx, instructions, OP_null);
   } else if (isTag(rval, "JSBigInt")) {
@@ -2439,7 +2463,7 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
       isTag(currStmt, "JSCatchContext") || isTag(currStmt, "JSBinop") ||
       isTag(currStmt, "JSUnop") || isTag(currStmt, "Unop") ||
       isTag(currStmt, "Binop") || isTag(currStmt, "JSComputedFieldRead") ||
-      isTag(currStmt, "JSSuperFieldRead") || isTag(currStmt, "JSToObject") ||
+      isTag(currStmt, "JSToObject") ||
       isTag(currStmt, "JSAppend") || isTag(currStmt, "JSCopyDataProperties") ||
       isTag(currStmt, "UNOPDelMemberExpr") || isTag(currStmt, "UNOPDelVar") ||
       isTag(currStmt, "Await") || isTag(currStmt, "IDOP") ||
@@ -2568,8 +2592,7 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
     handleComputedFieldWrite(ctx, instructions, currStmt, false);
   } else if (isTag(currStmt, "FieldWrite")) {
     handleFieldWrite(ctx, instructions, currStmt, false);
-  } else if (isTag(currStmt, "JSSuperFieldWrite") ||
-             isTag(currStmt, "JSPrivateFieldWrite")) {
+  } else if (isTag(currStmt, "JSPrivateFieldWrite")) {
     lowerToStack(ctx, instructions, currStmt);
     return pushOP(ctx, instructions, OP_drop);
   } else if (isTag(currStmt, "Throw")) {
