@@ -2428,18 +2428,12 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
       pushOP(ctx, instructions, OP_drop);
     }
     pushOP(ctx, instructions, OP_drop);
-  } else if (isTag(currStmt, "JSDefineObjMethod")) {
-    uint8_t op_flag;
-    if (hasFlag(currStmt, "METHOD")) {
-      op_flag = OP_DEFINE_METHOD_METHOD;
-    } else if (hasFlag(currStmt, "GET")) {
-      op_flag = OP_DEFINE_METHOD_GETTER;
-    } else if (hasFlag(currStmt, "SET")) {
-      op_flag = OP_DEFINE_METHOD_SETTER;
-    } else {
-      fprintf(stderr, "TODO: JSDefineObjMethod invalid flag\n");
-      exit(1);
-    }
+  } else if (isTag(currStmt, "JSDefineMethod") ||
+             isTag(currStmt, "JSDefineGetter") ||
+             isTag(currStmt, "JSDefineSetter")) {
+    uint8_t op_flag = isTag(currStmt, "JSDefineGetter")   ? OP_DEFINE_METHOD_GETTER
+                      : isTag(currStmt, "JSDefineSetter") ? OP_DEFINE_METHOD_SETTER
+                                                          : OP_DEFINE_METHOD_METHOD;
 
     if (!hasFlag(currStmt, "NOENUM"))
       op_flag = op_flag | OP_DEFINE_METHOD_ENUMERABLE;
