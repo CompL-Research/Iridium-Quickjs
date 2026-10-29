@@ -1521,40 +1521,6 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
     return handleFieldRead(ctx, instructions, rval, false);
   } else if (isTag(rval, "JSComputedFieldRead")) {
     return handleComputedFieldRead(ctx, instructions, rval, false);
-  } else if (isTag(rval, "IDOP")) {
-    bool isPrefix = getFlagBoolean(rval, "PREFIX");
-    bool isIncrement = getFlagBoolean(rval, "INCREMENT");
-
-    // Read field
-    IridiumSEXP *fieldRead = rval->args[0];
-    assert(isTag(fieldRead, "FieldRead"));
-    IridiumSEXP *field = fieldRead->args[1];
-    ensureTag(field, "String");
-    JSAtom fieldAtom =
-        JS_NewAtom(ctx, getFlagString(field, "IridiumPrimitive"));
-
-    handleFieldRead(ctx, instructions, fieldRead, true);
-    // obj obj.field
-
-    if (isPrefix) {
-      // Pre increment
-      // obj oldVal
-      pushOP(ctx, instructions, isIncrement ? OP_inc : OP_dec);
-      // obj newVal
-      pushOP(ctx, instructions, OP_insert2);
-      // newVal obj newVal -- same as dup_x1 in Java bytecode
-      pushOP32(ctx, instructions, OP_put_field, fieldAtom);
-      // newVal
-    } else {
-      // Post increment
-      // obj oldVal
-      pushOP(ctx, instructions, isIncrement ? OP_post_inc : OP_post_dec);
-      // obj oldVal newVal
-      pushOP(ctx, instructions, OP_perm3);
-      // oldVal obj newVal
-      pushOP32(ctx, instructions, OP_put_field, fieldAtom);
-      // oldVal
-    }
   } else if (isTag(rval, "JSIDOP")) {
     bool isPrefix = getFlagBoolean(rval, "PREFIX");
     bool isIncrement = getFlagBoolean(rval, "INCREMENT");
@@ -2404,7 +2370,7 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
       isTag(currStmt, "JSToObject") ||
       isTag(currStmt, "JSAppend") || isTag(currStmt, "JSCopyDataProperties") ||
       isTag(currStmt, "UNOPDelMemberExpr") || isTag(currStmt, "UNOPDelVar") ||
-      isTag(currStmt, "Await") || isTag(currStmt, "IDOP") ||
+      isTag(currStmt, "Await") ||
       isTag(currStmt, "JSIDOP") || isTag(currStmt, "DCTRRet") ||
       isTag(currStmt, "ToNumeric") || isTag(currStmt, "JSGetPrototypeOf")
 
