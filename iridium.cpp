@@ -1170,12 +1170,6 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
     case 6: {
       return pushOP8(ctx, instructions, OP_special_object, OPID);
     }
-    case 7:
-    case 8: {
-      assert(rval->numArgs == 1);
-      lowerToStack(ctx, instructions, rval->args[0]);
-      return pushOP(ctx, instructions, OP_get_super);
-    }
     case 9: {
       return pushOP(ctx, instructions, OP_push_this);
     }
@@ -1721,6 +1715,9 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
     lowerToStack(ctx, instructions, rval->args[1]);
     // return pushOP(ctx, instructions, OP_get_private_field);
     return;
+  } else if (isTag(rval, "JSGetPrototypeOf")) {
+    lowerToStack(ctx, instructions, rval->args[0]);
+    return pushOP(ctx, instructions, OP_get_super);
   } else if (isTag(rval, "JSSuperFieldRead")) {
     lowerToStack(ctx, instructions, rval->args[0]);
     lowerToStack(ctx, instructions, rval->args[1]);
@@ -1728,8 +1725,9 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
     lowerToStack(ctx, instructions, rval->args[2]);
     return pushOP(ctx, instructions, OP_get_super_value);
   } else if (isTag(rval, "JSSuperFieldWrite")) {
-    lowerToStack(ctx, instructions, rval->args[0]);
-    lowerToStack(ctx, instructions, rval->args[1]);
+    lowerToStack(ctx, instructions, rval->args[0]); // this
+    lowerToStack(ctx, instructions, rval->args[1]); // home object
+    pushOP(ctx, instructions, OP_get_super);        // super object
     lowerToStack(ctx, instructions, rval->args[2]);
     lowerToStack(ctx, instructions, rval->args[3]);
     // this obj prop a -> a this obj prop a
@@ -2446,7 +2444,7 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
       isTag(currStmt, "UNOPDelMemberExpr") || isTag(currStmt, "UNOPDelVar") ||
       isTag(currStmt, "Await") || isTag(currStmt, "IDOP") ||
       isTag(currStmt, "JSIDOP") || isTag(currStmt, "DCTRRet") ||
-      isTag(currStmt, "ToNumeric")
+      isTag(currStmt, "ToNumeric") || isTag(currStmt, "JSGetPrototypeOf")
 
       || isTag(currStmt, "JSTemplate")) {
     lowerToStack(ctx, instructions, currStmt);
@@ -2678,7 +2676,7 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
 
     return pushOP32(ctx, instructions, OP_catch, target);
   } else if (isTag(currStmt, "PopCatchContext") ||
-             isTag(currStmt, "PopFinalizerReturnTarget")) {
+             isTag(currStmt, "ExitFinalizer")) {
     return pushOP(ctx, instructions, OP_drop);
   } else if (isTag(currStmt, "Return")) {
     lowerToStack(ctx, instructions, currStmt->args[0]);
