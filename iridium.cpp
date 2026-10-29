@@ -1350,6 +1350,10 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
     lowerToStack(ctx, instructions, rval->args[1]);
     pushOP(ctx, instructions, OP_check_brand);
     return pushOP(ctx, instructions, OP_nip);
+  } else if (isTag(rval, "JSThrowError")) {
+    // TypeError: 'NAME' is read-only
+    return pushOP32Flags(ctx, instructions, OP_throw_error,
+                         JS_NewAtom(ctx, getFlagString(rval, "NAME")), 0);
   } else if (isTag(rval, "JSHasPrivate")) {
     // #[name] in obj
     lowerToStack(ctx, instructions, rval->args[0]);
@@ -2391,6 +2395,7 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
       isTag(currStmt, "JSConstruct") || isTag(currStmt, "JSConstructApply") ||
       isTag(currStmt, "JSEval") || isTag(currStmt, "JSEvalApply") ||
       isTag(currStmt, "JSCheckBrand") || isTag(currStmt, "JSHasPrivate") ||
+      isTag(currStmt, "JSThrowError") ||
       isTag(currStmt, "JSPrivateFieldRead") ||
       isTag(currStmt, "JSCatchContext") || isTag(currStmt, "JSBinop") ||
       isTag(currStmt, "JSUnop") || isTag(currStmt, "Unop") ||
