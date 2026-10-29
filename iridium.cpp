@@ -1642,22 +1642,23 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
     }
     return;
   } else if (isTag(rval, "JSClass")) {
+    // JSClass(constructor[, parent]): derived iff the parent is present
+    bool isDerived = rval->numArgs > 1;
     JSAtom classNameAtom = JS_NewAtom(ctx, getFlagString(rval, "NAME"));
-
-    lowerToStack(ctx, instructions, rval->args[0]);
-
+    if (isDerived)
+      lowerToStack(ctx, instructions, rval->args[1]);
+    else
+      pushOP(ctx, instructions, OP_undefined);
     // Instead of creating a closure, we push the constructor bytecode directly
     // onto the stack
     {
-      IridiumSEXP *constructorClosure = rval->args[1];
+      IridiumSEXP *constructorClosure = rval->args[0];
       uint32_t poolOffset = getFlagNumber(constructorClosure, "REFIDX");
       pushOP32(ctx, instructions, OP_push_const, poolOffset);
       instructions.back().lambdaPoolReference = true;
     }
-
-    uint8_t flags = hasFlag(rval, "DERIVED") ? 1 : 0;
-    pushOP32Flags(ctx, instructions, OP_define_class, classNameAtom, flags);
-
+    pushOP32Flags(ctx, instructions, OP_define_class, classNameAtom,
+                  isDerived ? 1 : 0);
     return;
   } else if (isTag(rval, "JSArray")) {
     if (rval->numArgs < 32) {
