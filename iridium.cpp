@@ -1004,137 +1004,82 @@ void handleComputedFieldWrite(JSContext *ctx,
   pushOP(ctx, instructions, OP_put_array_el); // Receiver Field Rval
 }
 
+// Two reads of the same variable (new F(): callee and new.target are both F)
+static bool isSameVariableRead(IridiumSEXP *a, IridiumSEXP *b) {
+  if (!isTag(a, "EnvRead") || !isTag(b, "EnvRead"))
+    return false;
+  IridiumSEXP *x = a->args[0], *y = b->args[0];
+  if (x->tag != y->tag)
+    return false;
+  if (isTag(x, "EnvBinding") || isTag(x, "RemoteEnvBinding"))
+    return getFlagNumber(x, "REFIDX") == getFlagNumber(y, "REFIDX");
+  if (isTag(x, "GlobalBinding"))
+    return strcmp(getFlagString(x, "NAME"), getFlagString(y, "NAME")) == 0;
+  return false;
+}
+
+// A plain call f(a) passes a read of `undefined` as `this`
+static bool isUndefinedRead(IridiumSEXP *n) {
+  return isTag(n, "EnvRead") && isTag(n->args[0], "GlobalBinding") &&
+         strcmp(getFlagString(n->args[0], "NAME"), "undefined") == 0;
+}
+
+// CallSite(callee, this, ...args): [[Call]](callee, this, args)
 void handleCallSite(JSContext *ctx, vector<BCInstruction> &instructions,
                     IridiumSEXP *rval) {
-  int i = 0;
-
-  // Private Call needs to be behind a brand check
-  if (hasFlag(rval, "PrivateCall")) {
-    assert(rval->numArgs >= 2);
-    lowerToStack(ctx, instructions, rval->args[0]);
-    pushOP(ctx, instructions, OP_dup);
-    lowerToStack(ctx, instructions, rval->args[1]);
-    i = 2;
-  }
-
-  // Peephole optimization for fields of call statements...
-  if (hasFlag(rval, "CCall")) {
-    // If the context object and the receiver object are the same, we can
-    // simply ignore the first argument and retain the context upon field
-    // lookup
-    auto contextObj = rval->args[0];
-    auto lookup = rval->args[1];
-
-    if ((isTag(lookup, "FieldRead") || isTag(lookup, "JSComputedFieldRead")) &&
-        lookup->numArgs == 2) {
-      if (isTag(lookup->args[0], "EnvRead")) {
-        auto receiver = lookup->args[0]->args[0];
-        if (isTag(receiver, "GlobalBinding")) {
-          if (isTag(contextObj, "EnvRead")) {
-            auto bindingReadByContextObj = contextObj->args[0];
-            if (isTag(bindingReadByContextObj, "GlobalBinding")) {
-              if (strcmp(getFlagString(receiver, "NAME"),
-                         getFlagString(bindingReadByContextObj, "NAME")) == 0) {
-                // handleFieldRead(ctx, instructions, lookup, true);
-                if (isTag(lookup, "FieldRead")) {
-                  handleFieldRead(ctx, instructions, lookup, true);
-                } else if (isTag(lookup, "JSComputedFieldRead")) {
-                  handleComputedFieldRead(ctx, instructions, lookup, true);
-                }
-                i = 2;
-              }
-            }
-          }
-        } else if (isTag(receiver, "EnvBinding")) {
-          int receiverIDX = getFlagNumber(receiver, "REFIDX");
-          if (isTag(contextObj, "EnvRead")) {
-            auto bindingReadByContextObj = contextObj->args[0];
-            if (isTag(bindingReadByContextObj, "EnvBinding")) {
-              int contextIDX = getFlagNumber(bindingReadByContextObj, "REFIDX");
-              if (receiverIDX == contextIDX) {
-                // handleFieldRead(ctx, instructions, lookup, true);
-                if (isTag(lookup, "FieldRead")) {
-                  handleFieldRead(ctx, instructions, lookup, true);
-                } else if (isTag(lookup, "JSComputedFieldRead")) {
-                  handleComputedFieldRead(ctx, instructions, lookup, true);
-                }
-                i = 2;
-              }
-            }
-          }
-        } else if (isTag(receiver, "RemoteEnvBinding")) {
-          int receiverIDX = getFlagNumber(receiver, "REFIDX");
-          if (isTag(contextObj, "EnvRead")) {
-            auto bindingReadByContextObj = contextObj->args[0];
-            if (isTag(bindingReadByContextObj, "RemoteEnvBinding")) {
-              int contextIDX = getFlagNumber(bindingReadByContextObj, "REFIDX");
-              if (receiverIDX == contextIDX) {
-                // handleFieldRead(ctx, instructions, lookup, true);
-                if (isTag(lookup, "FieldRead")) {
-                  handleFieldRead(ctx, instructions, lookup, true);
-                } else if (isTag(lookup, "JSComputedFieldRead")) {
-                  handleComputedFieldRead(ctx, instructions, lookup, true);
-                }
-                i = 2;
-              }
-            }
-          }
-        }
-      }
-    } else {
-      // Todo handle more cases
-    }
-  }
-
-  bool isTailCall = hasFlag(rval, "TAILCALL");
-
-  // Lower Arguments
-  for (; i < rval->numArgs; i++) {
-    lowerToStack(ctx, instructions, rval->args[i]);
-  }
+  assert(rval->numArgs >= 2);
+  IridiumSEXP *callee = rval->args[0];
+  IridiumSEXP *thisArg = rval->args[1];
+  int argc = rval->numArgs - 2;
 
   if (hasFlag(rval, "JSDirectEval")) {
+    // eval(...) takes no `this`
+    lowerToStack(ctx, instructions, callee);
+    for (int i = 2; i < rval->numArgs; i++)
+      lowerToStack(ctx, instructions, rval->args[i]);
     uint32_t data = 0;
     uint16_t *d1 = (uint16_t *)&data;
     uint16_t *d2 = d1 + 1;
-
-    *d1 = rval->numArgs - 1;
+    *d1 = argc;
     *d2 = getFlagNumber(rval, "JSDirectEval"); // scopeIdx
-
-    // Arguments were pushed
     return pushOP32(ctx, instructions, OP_eval, data);
-  } else if (hasFlag(rval, "CCall")) {
-    if (isTailCall)
-      return pushOP16(ctx, instructions, OP_tail_call_method,
-                      rval->numArgs - 2);
-    return pushOP16(ctx, instructions, OP_call_method, rval->numArgs - 2);
-  } else if (hasFlag(rval, "PrivateCall")) {
-    if (isTailCall)
-      return pushOP16(ctx, instructions, OP_tail_call_method,
-                      rval->numArgs - 2);
-    return pushOP16(ctx, instructions, OP_call_method, rval->numArgs - 2);
-  } else {
-    auto fArgs = rval->numArgs - 1;
-    if (isTailCall)
-      return pushOP16(ctx, instructions, OP_tail_call, fArgs);
-    switch (fArgs) {
+  }
+
+  if (isUndefinedRead(thisArg)) {
+    lowerToStack(ctx, instructions, callee);
+    for (int i = 2; i < rval->numArgs; i++)
+      lowerToStack(ctx, instructions, rval->args[i]);
+    switch (argc) {
     case 0:
       return pushOP(ctx, instructions, OP_call0);
-      break;
     case 1:
       return pushOP(ctx, instructions, OP_call1);
-      break;
     case 2:
       return pushOP(ctx, instructions, OP_call2);
-      break;
     case 3:
       return pushOP(ctx, instructions, OP_call3);
-      break;
     default:
-      return pushOP16(ctx, instructions, OP_call, fArgs);
-      break;
+      return pushOP16(ctx, instructions, OP_call, argc);
     }
   }
+
+  // call_method expects `this` below the function. If the callee is a field
+  // read on the same variable as `this`, get_field2 keeps the object.
+  bool isFieldOnThis =
+      (isTag(callee, "FieldRead") || isTag(callee, "JSComputedFieldRead")) &&
+      callee->numArgs == 2 && isSameVariableRead(thisArg, callee->args[0]);
+  if (isFieldOnThis) {
+    if (isTag(callee, "FieldRead"))
+      handleFieldRead(ctx, instructions, callee, true);
+    else
+      handleComputedFieldRead(ctx, instructions, callee, true);
+  } else {
+    lowerToStack(ctx, instructions, thisArg);
+    lowerToStack(ctx, instructions, callee);
+  }
+  for (int i = 2; i < rval->numArgs; i++)
+    lowerToStack(ctx, instructions, rval->args[i]);
+  return pushOP16(ctx, instructions, OP_call_method, argc);
 }
 
 void handleApply(JSContext *ctx, vector<BCInstruction> &instructions,
@@ -1161,20 +1106,6 @@ void handleApply(JSContext *ctx, vector<BCInstruction> &instructions,
   } else {
     return pushOP16(ctx, instructions, OP_apply, 0);
   }
-}
-
-// Two reads of the same variable (new F(): callee and new.target are both F)
-static bool isSameVariableRead(IridiumSEXP *a, IridiumSEXP *b) {
-  if (!isTag(a, "EnvRead") || !isTag(b, "EnvRead"))
-    return false;
-  IridiumSEXP *x = a->args[0], *y = b->args[0];
-  if (x->tag != y->tag)
-    return false;
-  if (isTag(x, "EnvBinding") || isTag(x, "RemoteEnvBinding"))
-    return getFlagNumber(x, "REFIDX") == getFlagNumber(y, "REFIDX");
-  if (isTag(x, "GlobalBinding"))
-    return strcmp(getFlagString(x, "NAME"), getFlagString(y, "NAME")) == 0;
-  return false;
 }
 
 // [[Construct]](callee, args, newTarget): JSConstruct (arguments after
