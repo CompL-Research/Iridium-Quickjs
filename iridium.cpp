@@ -1008,15 +1008,6 @@ void handleCallSite(JSContext *ctx, vector<BCInstruction> &instructions,
                     IridiumSEXP *rval) {
   int i = 0;
 
-  // Handle Constructor Call Context, the class object is duplicated on the
-  // stack
-  if (hasFlag(rval, "ConstructorCall")) {
-    assert(rval->numArgs >= 1);
-    lowerToStack(ctx, instructions, rval->args[0]);
-    pushOP(ctx, instructions, OP_dup);
-    i = 1;
-  }
-
   // Private Call needs to be behind a brand check
   if (hasFlag(rval, "PrivateCall")) {
     assert(rval->numArgs >= 2);
@@ -1112,10 +1103,6 @@ void handleCallSite(JSContext *ctx, vector<BCInstruction> &instructions,
 
     // Arguments were pushed
     return pushOP32(ctx, instructions, OP_eval, data);
-  } else if (hasFlag(rval, "Super")) {
-    return pushOP16(ctx, instructions, OP_call_constructor, rval->numArgs - 2);
-  } else if (hasFlag(rval, "ConstructorCall")) {
-    return pushOP16(ctx, instructions, OP_call_constructor, rval->numArgs - 1);
   } else if (hasFlag(rval, "CCall")) {
     if (isTailCall)
       return pushOP16(ctx, instructions, OP_tail_call_method,
@@ -1157,42 +1144,56 @@ void handleApply(JSContext *ctx, vector<BCInstruction> &instructions,
   auto &callee = rval->args[0];
   auto &calleeCTX = rval->args[1];
   auto &argList = rval->args[2];
-  bool isConstructorCall = hasFlag(rval, "ConstructorCall");
   bool isJSDirectEval = hasFlag(rval, "JSDirectEval");
-  bool isSuper = hasFlag(rval, "Super");
 
-  // Lower callee
+  // Lower callee, then `this` (direct eval takes none)
   lowerToStack(ctx, instructions, callee);
-
-  if (isConstructorCall && isJSDirectEval) {
-    throw std::runtime_error("tried to call eval as a constructor");
-  }
-
-  // Lower callee context
-  if (isSuper) {
+  if (!isJSDirectEval)
     lowerToStack(ctx, instructions, calleeCTX);
-  } else if (isConstructorCall) {
-    pushOP(ctx, instructions, OP_dup);
-  } else if (isJSDirectEval) {
-    // Do nothing
-  } else {
-    lowerToStack(ctx, instructions, calleeCTX);
-  }
 
   // Lower arglist
   lowerToStack(ctx, instructions, argList);
 
   // Emit call
-  if (isSuper) {
-    return pushOP16(ctx, instructions, OP_apply, 1);
-  } else if (isConstructorCall) {
-    return pushOP16(ctx, instructions, OP_apply, 1);
-  } else if (isJSDirectEval) {
+  if (isJSDirectEval) {
     double directEvalScope = getFlagDouble(rval, "JSDirectEval");
     return pushOP16(ctx, instructions, OP_apply_eval, directEvalScope);
   } else {
     return pushOP16(ctx, instructions, OP_apply, 0);
   }
+}
+
+// Two reads of the same variable (new F(): callee and new.target are both F)
+static bool isSameVariableRead(IridiumSEXP *a, IridiumSEXP *b) {
+  if (!isTag(a, "EnvRead") || !isTag(b, "EnvRead"))
+    return false;
+  IridiumSEXP *x = a->args[0], *y = b->args[0];
+  if (x->tag != y->tag)
+    return false;
+  if (isTag(x, "EnvBinding") || isTag(x, "RemoteEnvBinding"))
+    return getFlagNumber(x, "REFIDX") == getFlagNumber(y, "REFIDX");
+  if (isTag(x, "GlobalBinding"))
+    return strcmp(getFlagString(x, "NAME"), getFlagString(y, "NAME")) == 0;
+  return false;
+}
+
+// [[Construct]](callee, args, newTarget): JSConstruct (arguments after
+// new.target) and JSConstructApply (an argument array).
+void handleConstruct(JSContext *ctx, vector<BCInstruction> &instructions,
+                     IridiumSEXP *rval, bool isApply) {
+  lowerToStack(ctx, instructions, rval->args[0]); // callee
+  if (isSameVariableRead(rval->args[0], rval->args[1]))
+    pushOP(ctx, instructions, OP_dup); // new.target = callee
+  else
+    lowerToStack(ctx, instructions, rval->args[1]); // new.target
+  if (isApply) {
+    lowerToStack(ctx, instructions, rval->args[2]);
+    pushOP16(ctx, instructions, OP_apply, 1);
+    return;
+  }
+  for (int i = 2; i < rval->numArgs; i++)
+    lowerToStack(ctx, instructions, rval->args[i]);
+  pushOP16(ctx, instructions, OP_call_constructor, rval->numArgs - 2);
 }
 
 void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
@@ -1403,6 +1404,10 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
                       JS_NewAtom(ctx, lookupVal));
   } else if (isTag(rval, "Apply")) {
     handleApply(ctx, instructions, rval);
+  } else if (isTag(rval, "JSConstruct")) {
+    handleConstruct(ctx, instructions, rval, false);
+  } else if (isTag(rval, "JSConstructApply")) {
+    handleConstruct(ctx, instructions, rval, true);
   } else if (isTag(rval, "CallSite")) {
     handleCallSite(ctx, instructions, rval);
   } else if (isTag(rval, "EnvRead")) {
@@ -2459,6 +2464,7 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
   // New AMP nodes
   if (isTag(currStmt, "EnvRead") || isTag(currStmt, "FieldRead") ||
       isTag(currStmt, "CallSite") || isTag(currStmt, "Apply") ||
+      isTag(currStmt, "JSConstruct") || isTag(currStmt, "JSConstructApply") ||
       isTag(currStmt, "PVTEnvRead") || isTag(currStmt, "JSPrivateFieldRead") ||
       isTag(currStmt, "JSCatchContext") || isTag(currStmt, "JSBinop") ||
       isTag(currStmt, "JSUnop") || isTag(currStmt, "Unop") ||
