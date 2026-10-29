@@ -956,11 +956,12 @@ void handleComputedFieldRead(JSContext *ctx,
 }
 
 // Opt this...
+// obj.#[symbol] = value (PrivateSet) / := value (isDefine: PrivateFieldAdd);
+// leaves value on the stack
 void handleJSPrivateFieldWrite(JSContext *ctx,
                                vector<BCInstruction> &instructions,
-                               IridiumSEXP *rval) {
-  bool isDeclaration = hasFlag(rval, "DECL");
-  if (isDeclaration) {
+                               IridiumSEXP *rval, bool isDefine) {
+  if (isDefine) {
     lowerToStack(ctx, instructions, rval->args[0]);     // obj
     lowerToStack(ctx, instructions, rval->args[1]);     // obj prop
     lowerToStack(ctx, instructions, rval->args[2]);     // obj prop value
@@ -1343,20 +1344,17 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
   } else if (isTag(rval, "EnvRead")) {
     return lowerToStack(ctx, instructions, rval->args[0],
                         hasFlag(rval, "SAFE"));
-  } else if (isTag(rval, "PVTEnvRead")) {
-    // This insturuction expects that the "this" context was passed by the
-    // parent...
+  } else if (isTag(rval, "JSCheckBrand")) {
+    // obj.#method[m]: brand check, leaves the method
     lowerToStack(ctx, instructions, rval->args[0]);
-    if (!hasFlag(rval, "FULLY_RESOLVE"))
-      return;
-    bool isMethod = hasFlag(rval, "METHOD");
-    if (isMethod) {
-      pushOP(ctx, instructions, OP_check_brand);
-      pushOP(ctx, instructions, OP_nip);
-    } else {
-      pushOP(ctx, instructions, OP_get_private_field);
-    }
-    return;
+    lowerToStack(ctx, instructions, rval->args[1]);
+    pushOP(ctx, instructions, OP_check_brand);
+    return pushOP(ctx, instructions, OP_nip);
+  } else if (isTag(rval, "JSHasPrivate")) {
+    // #[name] in obj
+    lowerToStack(ctx, instructions, rval->args[0]);
+    lowerToStack(ctx, instructions, rval->args[1]);
+    return pushOP(ctx, instructions, OP_private_in);
   } else if (isTag(rval, "Boolean")) {
     bool res = getFlagBoolean(rval, "IridiumPrimitive");
     if (res) {
@@ -1487,10 +1485,6 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
       lowerToStack(ctx, instructions, rval->args[0]);
       lowerToStack(ctx, instructions, rval->args[1]);
       return pushOP(ctx, instructions, OP_strict_neq);
-    } else if (strcmp(op, "pin") == 0) {
-      lowerToStack(ctx, instructions, rval->args[0]);
-      lowerToStack(ctx, instructions, rval->args[1]);
-      return pushOP(ctx, instructions, OP_private_in);
     } else if (strcmp(op, "in") == 0) {
       lowerToStack(ctx, instructions, rval->args[0]);
       lowerToStack(ctx, instructions, rval->args[1]);
@@ -1685,10 +1679,10 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
     JSAtom strAtom = JS_NewAtom(ctx, data);
     return pushOP32(ctx, instructions, OP_private_symbol, strAtom);
   } else if (isTag(rval, "JSPrivateFieldRead")) {
+    // obj.#[symbol]
     lowerToStack(ctx, instructions, rval->args[0]);
     lowerToStack(ctx, instructions, rval->args[1]);
-    // return pushOP(ctx, instructions, OP_get_private_field);
-    return;
+    return pushOP(ctx, instructions, OP_get_private_field);
   } else if (isTag(rval, "JSGetPrototypeOf")) {
     lowerToStack(ctx, instructions, rval->args[0]);
     return pushOP(ctx, instructions, OP_get_super);
@@ -2396,7 +2390,8 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
       isTag(currStmt, "CallSite") || isTag(currStmt, "Apply") ||
       isTag(currStmt, "JSConstruct") || isTag(currStmt, "JSConstructApply") ||
       isTag(currStmt, "JSEval") || isTag(currStmt, "JSEvalApply") ||
-      isTag(currStmt, "PVTEnvRead") || isTag(currStmt, "JSPrivateFieldRead") ||
+      isTag(currStmt, "JSCheckBrand") || isTag(currStmt, "JSHasPrivate") ||
+      isTag(currStmt, "JSPrivateFieldRead") ||
       isTag(currStmt, "JSCatchContext") || isTag(currStmt, "JSBinop") ||
       isTag(currStmt, "JSUnop") || isTag(currStmt, "Unop") ||
       isTag(currStmt, "Binop") || isTag(currStmt, "JSComputedFieldRead") ||
@@ -2522,16 +2517,15 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
       pushOP(ctx, instructions, OP_set_name_computed);
     }
     pushOP(ctx, instructions, OP_drop);
-  } else if (isTag(currStmt, "JSPrivateFieldWrite")) {
-    handleJSPrivateFieldWrite(ctx, instructions, currStmt);
+  } else if (isTag(currStmt, "JSPrivateFieldWrite") ||
+             isTag(currStmt, "JSPrivateFieldDefine")) {
+    handleJSPrivateFieldWrite(ctx, instructions, currStmt,
+                              isTag(currStmt, "JSPrivateFieldDefine"));
     pushOP(ctx, instructions, OP_drop);
   } else if (isTag(currStmt, "JSComputedFieldWrite")) {
     handleComputedFieldWrite(ctx, instructions, currStmt, false);
   } else if (isTag(currStmt, "FieldWrite")) {
     handleFieldWrite(ctx, instructions, currStmt, false);
-  } else if (isTag(currStmt, "JSPrivateFieldWrite")) {
-    lowerToStack(ctx, instructions, currStmt);
-    return pushOP(ctx, instructions, OP_drop);
   } else if (isTag(currStmt, "Throw")) {
     lowerToStack(ctx, instructions, currStmt->args[0]);
     return pushOP(ctx, instructions, OP_throw);
