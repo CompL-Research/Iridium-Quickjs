@@ -3113,6 +3113,22 @@ void dumpBCLList(JSContext *ctx, vector<BCInstruction> &instructions) {
   }
 }
 
+// Needed for eval to work
+static JSVarKindEnum privateVarKindOf(IridiumSEXP *binding) {
+  if (hasFlag(binding, "PRIVFIELD"))
+    return JS_VAR_PRIVATE_FIELD;
+  if (hasFlag(binding, "PRIVMETHOD"))
+    return JS_VAR_PRIVATE_METHOD;
+  if (hasFlag(binding, "PRIVGET"))
+    return JS_VAR_PRIVATE_GETTER;
+  if (hasFlag(binding, "PRIVGETSET"))
+    return JS_VAR_PRIVATE_GETTER_SETTER;
+  if (hasFlag(binding, "PRIVSET"))
+    return JS_VAR_PRIVATE_SETTER;
+  return JS_VAR_NORMAL;
+}
+
+
 JSValue generateQjsFunction(JSContext *ctx, IridiumSEXP *bbContainer,
                             vector<BCInstruction> &instructions) {
   bool isStrict = hasFlag(bbContainer, "STRICT");
@@ -3241,7 +3257,7 @@ JSValue generateQjsFunction(JSContext *ctx, IridiumSEXP *bbContainer,
     b->vardefs[i].var_name = JS_NewAtom(ctx, name);
     b->vardefs[i].scope_level = scope_level;
     b->vardefs[i].scope_next = scope_next;
-    b->vardefs[i].var_kind = JS_VAR_NORMAL;
+    b->vardefs[i].var_kind = privateVarKindOf(envBinding);
 
     b->vardefs[i].is_const = 0;
     b->vardefs[i].is_lexical = 0;
@@ -3321,7 +3337,7 @@ JSValue generateQjsFunction(JSContext *ctx, IridiumSEXP *bbContainer,
       b->closure_var[i].is_arg = JSARG || JSRESTARG;
       b->closure_var[i].is_const = JSCONST;
       b->closure_var[i].is_lexical = JSLET || JSVAR;
-      b->closure_var[i].var_kind = JS_VAR_NORMAL;
+      b->closure_var[i].var_kind = privateVarKindOf(resolvedBinding);
       b->closure_var[i].var_idx = REFIDX;
       b->closure_var[i].var_name = JS_NewAtom(ctx, name);
     }
