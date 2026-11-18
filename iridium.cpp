@@ -627,6 +627,21 @@ double getFlagDouble(IridiumSEXP *binding, const std::string &flagName) {
   exit(1);
 }
 
+// The .iri writer encodes non-finite doubles as strings ("Infinity",
+// "-Infinity", "NaN") because JSON has no literals for them and the
+// nlohmann reader rejects overflowing numbers. Decode them back here.
+double getFlagDoubleLoose(IridiumSEXP *binding, const std::string &flagName) {
+  IridiumFlag *flag = getFlag(binding, flagName);
+  if (flag->datatype == NUMBER) {
+    return flag->number_val;
+  }
+  if (flag->datatype == STRING) {
+    return strtod(flag->string_val.c_str(), nullptr);
+  }
+  std::cerr << "TODO: failed to get NUMBER(double)\n";
+  exit(1);
+}
+
 // ---------------------------------------------------------
 // THE OLD API (Legacy)
 // Returns char* so your existing code compiles without changes.
@@ -1197,11 +1212,11 @@ void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
 
     return pushOP16(ctx, instructions, OP_call_method, rval->numArgs);
   } else if (isTag(rval, "Number")) {
-    double data = getFlagDouble(rval, "IridiumPrimitive");
+    double data = getFlagDoubleLoose(rval, "IridiumPrimitive");
 
     // Check if exactly an integer
     double truncated = trunc(data);
-    if (data == truncated) {
+    if (std::isfinite(data) && data == truncated) {
       int64_t val = (int64_t)truncated;
 
       switch (val) {
@@ -2556,14 +2571,6 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
   } else if (isTag(currStmt, "JSModuleEnd")) {
     pushOP(ctx, instructions, OP_undefined);
     return pushOP(ctx, instructions, OP_return_async);
-  } else if (isTag(currStmt, "InvokeFinalizer")) {
-    auto target = getFlagNumber(currStmt, "IDX");
-    if ((*gotoContextMap).count(target) == 0)
-      (*gotoContextMap)[target] = GOTOINFO();
-
-    (*gotoContextMap)[target].kind = GOTOCONTEXT::MULTI;
-
-    return pushOP32(ctx, instructions, OP_gosub, target);
   } else if (isTag(currStmt, "Goto")) {
     auto target = getFlagNumber(currStmt, "IDX");
 
@@ -2621,8 +2628,6 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
         handleRMWrite(ctx, instructions, s, true);
       }
     }
-  } else if (isTag(currStmt, "Ret")) {
-    return pushOP(ctx, instructions, OP_ret);
   } else if (isTag(currStmt, "StackToHeap")) {
     for (int i = 0; i < currStmt->numArgs; i++) {
       IridiumSEXP *envBinding = currStmt->args[i];

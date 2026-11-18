@@ -7354,48 +7354,79 @@ class lexer : public lexer_base<BasicJsonType>
                             if (0xD800 <= codepoint1 && codepoint1 <= 0xDBFF)
                             {
                                 // expect next \uxxxx entry
-                                if (JSON_HEDLEY_LIKELY(get() == '\\' && get() == 'u'))
+                                const int pair_lead = get();
+                                if (JSON_HEDLEY_LIKELY(pair_lead == '\\'))
                                 {
-                                    const int codepoint2 = get_codepoint();
-
-                                    if (JSON_HEDLEY_UNLIKELY(codepoint2 == -1))
+                                    const int pair_marker = get();
+                                    if (JSON_HEDLEY_LIKELY(pair_marker == 'u'))
                                     {
-                                        error_message = "invalid string: '\\u' must be followed by 4 hex digits";
-                                        return token_type::parse_error;
-                                    }
+                                        const int codepoint2 = get_codepoint();
 
-                                    // check if codepoint2 is a low surrogate
-                                    if (JSON_HEDLEY_LIKELY(0xDC00 <= codepoint2 && codepoint2 <= 0xDFFF))
-                                    {
-                                        // overwrite codepoint
-                                        codepoint = static_cast<int>(
-                                                        // high surrogate occupies the most significant 22 bits
-                                                        (static_cast<unsigned int>(codepoint1) << 10u)
-                                                        // low surrogate occupies the least significant 15 bits
-                                                        + static_cast<unsigned int>(codepoint2)
-                                                        // there is still the 0xD800, 0xDC00 and 0x10000 noise
-                                                        // in the result, so we have to subtract with:
-                                                        // (0xD800 << 10) + DC00 - 0x10000 = 0x35FDC00
-                                                        - 0x35FDC00u);
+                                        if (JSON_HEDLEY_UNLIKELY(codepoint2 == -1))
+                                        {
+                                            error_message = "invalid string: '\\u' must be followed by 4 hex digits";
+                                            return token_type::parse_error;
+                                        }
+
+                                        // check if codepoint2 is a low surrogate
+                                        if (JSON_HEDLEY_LIKELY(0xDC00 <= codepoint2 && codepoint2 <= 0xDFFF))
+                                        {
+                                            // overwrite codepoint
+                                            codepoint = static_cast<int>(
+                                                            // high surrogate occupies the most significant 22 bits
+                                                            (static_cast<unsigned int>(codepoint1) << 10u)
+                                                            // low surrogate occupies the least significant 15 bits
+                                                            + static_cast<unsigned int>(codepoint2)
+                                                            // there is still the 0xD800, 0xDC00 and 0x10000 noise
+                                                            // in the result, so we have to subtract with:
+                                                            // (0xD800 << 10) + DC00 - 0x10000 = 0x35FDC00
+                                                            - 0x35FDC00u);
+                                        }
+                                        else
+                                        {
+                                            error_message = "invalid string: surrogate U+D800..U+DBFF must be followed by U+DC00..U+DFFF";
+                                            return token_type::parse_error;
+                                        }
                                     }
                                     else
                                     {
-                                        error_message = "invalid string: surrogate U+D800..U+DBFF must be followed by U+DC00..U+DFFF";
-                                        return token_type::parse_error;
+                                        // Iridium fork: high surrogate not
+                                        // followed by \u is a lone surrogate
+                                        // (valid WTF-8/JS code unit). The
+                                        // backslash and marker were already
+                                        // consumed by the lookahead; process
+                                        // the marker exactly as the escape
+                                        // switch above would have.
+                                        switch (pair_marker)
+                                        {
+                                            case '\"': add('\"'); break;
+                                            case '\\': add('\\'); break;
+                                            case '/': add('/'); break;
+                                            case 'b': add('\b'); break;
+                                            case 'f': add('\f'); break;
+                                            case 'n': add('\n'); break;
+                                            case 'r': add('\r'); break;
+                                            case 't': add('\t'); break;
+                                            default:
+                                                error_message = "invalid string: forbidden character after backslash";
+                                                return token_type::parse_error;
+                                        }
                                     }
                                 }
                                 else
                                 {
-                                    error_message = "invalid string: surrogate U+D800..U+DBFF must be followed by U+DC00..U+DFFF";
-                                    return token_type::parse_error;
+                                    // Iridium fork: lone high surrogate; replay
+                                    // the non-backslash char we just consumed.
+                                    unget();
                                 }
                             }
                             else
                             {
                                 if (JSON_HEDLEY_UNLIKELY(0xDC00 <= codepoint1 && codepoint1 <= 0xDFFF))
                                 {
-                                    error_message = "invalid string: surrogate U+DC00..U+DFFF must follow U+D800..U+DBFF";
-                                    return token_type::parse_error;
+                                    // Iridium fork: lone low surrogate escapes
+                                    // are accepted and emitted CESU-encoded by
+                                    // the byte translation below.
                                 }
                             }
 
@@ -7809,9 +7840,12 @@ class lexer : public lexer_base<BasicJsonType>
                 }
 
                 // U+D000..U+D7FF: bytes ED 80..9F 80..BF
+                // Iridium fork: also accept ED A0..BF 80..BF (WTF-8/CESU
+                // encoded lone surrogates) - the IRI pipeline round-trips
+                // them and quickjs's own decoder accepts them.
                 case 0xED:
                 {
-                    if (JSON_HEDLEY_UNLIKELY(!(next_byte_in_range({0x80, 0x9F, 0x80, 0xBF}))))
+                    if (JSON_HEDLEY_UNLIKELY(!(next_byte_in_range({0x80, 0xBF, 0x80, 0xBF}))))
                     {
                         return token_type::parse_error;
                     }
