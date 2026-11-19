@@ -750,8 +750,12 @@ void storeWhatevesOnTheStack(JSContext *ctx, IridiumSEXP *loc,
 
         if (hasFlag(next, "JSCONST") && !thisInit) {
           pushOP(ctx, instructions, OP_drop);
-          pushOP32Flags(ctx, instructions, OP_throw_error,
-                        JS_NewAtom(ctx, getFlagString(next, "NAME")), 0);
+          // A function's own name binding is immutable in strict code only; the
+          // value is discarded and the write ignored when it came from sloppy
+          // code (the Forge marks such bindings SLOPPYCONST).
+          if (!hasFlag(next, "SLOPPYCONST"))
+            pushOP32Flags(ctx, instructions, OP_throw_error,
+                          JS_NewAtom(ctx, getFlagString(next, "NAME")), 0);
           return;
         }
       }
@@ -812,8 +816,12 @@ void storeWhatevesOnTheStack(JSContext *ctx, IridiumSEXP *loc,
       if (!safe) {
         if (hasFlag(loc, "JSCONST") && !thisInit) {
           pushOP(ctx, instructions, OP_drop);
-          pushOP32Flags(ctx, instructions, OP_throw_error,
-                        JS_NewAtom(ctx, getFlagString(loc, "NAME")), 0);
+          // A function's own name binding is immutable in strict code only; the
+          // value is discarded and the write ignored when it came from sloppy
+          // code (the Forge marks such bindings SLOPPYCONST).
+          if (!hasFlag(loc, "SLOPPYCONST"))
+            pushOP32Flags(ctx, instructions, OP_throw_error,
+                          JS_NewAtom(ctx, getFlagString(loc, "NAME")), 0);
           return;
         }
       }
@@ -2284,6 +2292,11 @@ void handleLWrite(JSContext *ctx, vector<BCInstruction> &instructions,
 
   if (!INIT && hasFlag(loc, "JSCONST")) {
     pushOP(ctx, instructions, OP_drop);
+    // A function's own name binding is immutable in strict code only; the value
+    // is discarded and the write ignored when the binding came from sloppy code
+    // (the Forge pass that creates it marks it SLOPPYCONST).
+    if (hasFlag(loc, "SLOPPYCONST"))
+      return;
     return pushOP32Flags(ctx, instructions, OP_throw_error,
                          JS_NewAtom(ctx, getFlagString(loc, "NAME")), 0);
   }
@@ -2342,9 +2355,14 @@ void handleRMWrite(JSContext *ctx, vector<BCInstruction> &instructions,
 
   if (!INIT && hasFlag(resolvedBinding, "JSCONST")) {
     pushOP(ctx, instructions, OP_drop);
-    return pushOP32Flags(
-        ctx, instructions, OP_throw_error,
-        JS_NewAtom(ctx, getFlagString(resolvedBinding, "NAME")), 0);
+    // A function's own name binding is immutable in strict code only; the value
+    // is discarded and the write ignored when it came from sloppy code (the
+    // Forge marks such bindings SLOPPYCONST).
+    if (!hasFlag(resolvedBinding, "SLOPPYCONST"))
+      return pushOP32Flags(
+          ctx, instructions, OP_throw_error,
+          JS_NewAtom(ctx, getFlagString(resolvedBinding, "NAME")), 0);
+    return;
   }
 
   if (SAFE || INIT) {
@@ -2508,17 +2526,24 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
     pushOP(ctx, instructions, OP_drop);
   } else if (isTag(currStmt, "JSSetName")) {
     IridiumSEXP *obj = currStmt->args[0];
-    lowerToStack(ctx, instructions, obj);
     IridiumSEXP *name = currStmt->args[1];
     if (isTag(name, "String")) {
+      // OP_set_name keeps the function on the stack top; the drop consumes it.
+      lowerToStack(ctx, instructions, obj);
       JSAtom fieldAtom =
           JS_NewAtom(ctx, getFlagString(name, "IridiumPrimitive"));
       pushOP32(ctx, instructions, OP_set_name, fieldAtom);
+      pushOP(ctx, instructions, OP_drop);
     } else {
+      // OP_set_name_computed calls JS_DefineObjectNameComputed(ctx, sp[-1] =
+      // the function, sp[-2] = the name), so the name goes under the function;
+      // the opcode leaves both operands, so both are dropped.
       lowerToStack(ctx, instructions, name);
+      lowerToStack(ctx, instructions, obj);
       pushOP(ctx, instructions, OP_set_name_computed);
+      pushOP(ctx, instructions, OP_drop);
+      pushOP(ctx, instructions, OP_drop);
     }
-    pushOP(ctx, instructions, OP_drop);
   } else if (isTag(currStmt, "JSPrivateFieldWrite") ||
              isTag(currStmt, "JSPrivateFieldDefine")) {
     handleJSPrivateFieldWrite(ctx, instructions, currStmt,
@@ -3232,7 +3257,21 @@ JSValue generateQjsFunction(JSContext *ctx, IridiumSEXP *bbContainer,
   b->defined_arg_count = ecmaArgsCount;
 
   // Metadata
-  b->func_name = JS_NewAtom(ctx, getFlagString(bbContainer, "NAME"));
+  // FUNCNAME: the real JS-level function name, only emitted by the frontend
+  // for genuinely named definitions. NAME is a container-kind marker and must
+  // not leak into .name (OP_set_name is non-forcing and would be skipped).
+  {
+    IridiumFlag *fnameFlag = nullptr;
+    for (int i = 0; i < bbContainer->numFlags; i++) {
+      if (bbContainer->flags[i]->name == "FUNCNAME" &&
+          bbContainer->flags[i]->datatype == STRING) {
+        fnameFlag = bbContainer->flags[i];
+        break;
+      }
+    }
+    b->func_name =
+        JS_NewAtom(ctx, fnameFlag ? fnameFlag->string_val.data() : "");
+  }
   b->filename = JS_ATOM_NULL;
   b->line_num = 1;
   b->col_num = 1;
