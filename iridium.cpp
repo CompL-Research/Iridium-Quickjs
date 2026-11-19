@@ -2372,6 +2372,27 @@ void handleRMWrite(JSContext *ctx, vector<BCInstruction> &instructions,
 void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
                    IridiumSEXP *currStmt) {
 
+  if (isTag(currStmt, "PropKeyCheck")) {
+    // ToPropertyKey(binding), observable, converted value stored back
+    IridiumSEXP *loc = currStmt->args[0];
+    lowerToStack(ctx, instructions, currStmt->args[0]);
+    pushOP(ctx, instructions, OP_to_propkey);
+    if (isTag(loc, "EnvBinding")) {
+      if (hasFlag(loc, "JSARG")) {
+        int refIdx = getFlagNumber(loc, "REFIDX");
+        assert(refIdx > -1);
+        return pushOP16(ctx, instructions, OP_put_arg, refIdx);
+      }
+      return pushOP16(ctx, instructions, OP_put_loc_check,
+                      getFlagNumber(loc, "REFIDX"));
+    } else if (isTag(loc, "RemoteEnvBinding")) {
+      return pushOP16(ctx, instructions, OP_put_var_ref_check,
+                      getFlagNumber(loc, "REFIDX"));
+    }
+    fprintf(stderr, "TODO: PropKeyCheck store, unhandled loc kind!!\n");
+    exit(1);
+  }
+
   // New AMP nodes
   if (isTag(currStmt, "EnvRead") || isTag(currStmt, "FieldRead") ||
       isTag(currStmt, "CallSite") || isTag(currStmt, "Apply") ||
