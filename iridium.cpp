@@ -2444,10 +2444,11 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
     return pushOP(ctx, instructions,
                   isTag(currStmt, "JSForAwaitOfStart") ? OP_for_await_of_start
                                                        : OP_for_of_start);
-  } else if (isTag(currStmt, "QJSModuleInit")) {
+  } else if (isTag(currStmt, "ModuleDeclareGuard")) {
     pushOP(ctx, instructions, OP_push_this);
-    pushOP32(ctx, instructions, OP_if_false8, 2);
-    instructions.back().presolvedTarget = true;
+    pushOP32(ctx, instructions, OP_if_true, getFlagNumber(currStmt, "DECL"));
+    pushOP32(ctx, instructions, OP_goto, getFlagNumber(currStmt, "EVAL"));
+  } else if (isTag(currStmt, "ModuleDeclareReturn")) {
     pushOP(ctx, instructions, OP_return_undef);
   } else if (isTag(currStmt, "GWrite")) {
     handleGWrite(ctx, instructions, currStmt, false);
@@ -3873,8 +3874,15 @@ IridiumLoadResult compile_iri_module(JSContext *ctx, json &j) {
     for (int r = 0; r < moduleRequests->numArgs; ++r) {
       IridiumSEXP *moduleRequest = moduleRequests->args[r];
       char *SOURCE = getFlagString(moduleRequest, "SOURCE");
-      m->req_module_entries[r].module_name = JS_NewAtom(ctx, SOURCE);
-      m->req_module_entries[r].module = NULL;
+      // assert modeule 
+      int entry = getFlagNumber(moduleRequest, "REQIDX");
+      if (entry < 0 || entry >= m->req_module_entries_size ||
+          m->req_module_entries[entry].module_name != JS_ATOM_NULL) {
+        std::cerr << "Invalid module request REQIDX: " << entry << '\n';
+        exit(1);
+      }
+      m->req_module_entries[entry].module_name = JS_NewAtom(ctx, SOURCE);
+      m->req_module_entries[entry].module = NULL;
     }
   }
 
