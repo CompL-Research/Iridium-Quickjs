@@ -1148,7 +1148,9 @@ void handleConstruct(JSContext *ctx, vector<BCInstruction> &instructions,
 
 void lowerToStack(JSContext *ctx, vector<BCInstruction> &instructions,
                   IridiumSEXP *rval, bool safeRead) {
-  if (isTag(rval, "JSCTX")) {
+  if (isTag(rval, "ModuleDecl")) {
+    return pushOP(ctx, instructions, OP_push_this);
+  } else if (isTag(rval, "JSCTX")) {
     int OPID = getFlagNumber(rval, "OPID");
     switch (OPID) {
     case 0:
@@ -2444,12 +2446,9 @@ void handleIriStmt(JSContext *ctx, vector<BCInstruction> &instructions,
     return pushOP(ctx, instructions,
                   isTag(currStmt, "JSForAwaitOfStart") ? OP_for_await_of_start
                                                        : OP_for_of_start);
-  } else if (isTag(currStmt, "ModuleDeclareGuard")) {
-    pushOP(ctx, instructions, OP_push_this);
-    pushOP32(ctx, instructions, OP_if_true, getFlagNumber(currStmt, "DECL"));
-    pushOP32(ctx, instructions, OP_goto, getFlagNumber(currStmt, "EVAL"));
-  } else if (isTag(currStmt, "ModuleDeclareReturn")) {
-    pushOP(ctx, instructions, OP_return_undef);
+  } else if (isTag(currStmt, "ModuleDeclarationEarlyExit")) {
+    // Module has a special synchronous exit point
+    return pushOP(ctx, instructions, OP_return_undef);
   } else if (isTag(currStmt, "GWrite")) {
     handleGWrite(ctx, instructions, currStmt, false);
   } else if (isTag(currStmt, "LWrite")) {
